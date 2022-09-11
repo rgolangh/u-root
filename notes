@@ -1,0 +1,74 @@
+#!/bin/bash
+createInitrd() {
+        # I added the moduls from the net installer of fedora.
+        u-root \
+            -uinitcmd="echo Welcome to OpenShift Assisted bootloader" \
+            -files "/var/tmp/uroot/modules:/lib/modules" \
+            -files "/tmp/infraenvid:/infraenvid" \
+            -files "/tmp/token:/token" \
+            -o /var/tmp/uroot/initrd \
+            core ./cmds/boot/pxeboot ./cmds/exp/modprobe ./cmds/assisted-bootloader
+    }
+
+# run u-root created initramf in a vm
+
+runUrootVM() {
+    qemu-kvm \
+        -m 8G \
+        -cpu host \
+        -smp sockets=2,cores=2 \
+        -machine q35 \
+        -drive if=virtio,file=/home/rgolan/src/u-root/rhcos-raw-10G,format=raw \
+        -kernel /var/tmp/uroot/vmlinuz-5.17.5-300.fc36.x86_64 \
+        -initrd /var/tmp/uroot/initrd \
+        -nographic \
+        -chardev stdio,id=char0,mux=on,logfile=serial-0.log,signal=off \
+        -chardev pty,id=char1,mux=on,logfile=serial-1.log,signal=off \
+        -serial chardev:char0 -mon chardev=char0 \
+        -serial chardev:char1 -mon chardev=char1 \
+        -append "console=ttyS0" \
+        -netdev user,id=n1 \
+        -device e1000,netdev=n1 \
+        -device virtio-rng-pci
+}
+
+runSingleDiskUrootVM() {
+    qemu-kvm \
+        -m 8G \
+        -cpu host \
+        -smp sockets=2,cores=2 \
+        -machine q35 \
+        -drive if=virtio,file=/var/tmp/uroot/assisted-bootloader-modprobe.iso,media=disk \
+        -chardev stdio,id=char0,mux=on,logfile=serial-0.log,signal=off \
+        -chardev pty,id=char1,mux=on,logfile=serial-1.log,signal=off \
+        -netdev user,id=n1 \
+        -device e1000,netdev=n1 \
+        -device virtio-rng-pci
+}
+
+createISO() {
+    tmpdir=$(mktemp -d)
+    cp -r /var/tmp/uroot/CD_root ${tmpdir}/CD_root
+    cp /var/tmp/uroot/initrd ${tmpdir}/CD_root/isolinux/
+    mkisofs -o ${tmpdir}/output.iso \
+        -b isolinux/isolinux.bin \
+        -c isolinux/boot.cat \
+        -no-emul-boot -boot-load-size 4 \
+        -boot-info-table \
+        -V uroot -volset uroot -A uroot \
+        -U -r -T -J \
+        ${tmpdir}/CD_root/
+
+    isohybrid ${tmpdir}/output.iso
+    gzip -c ${tmpdir}/output.iso > ${tmpdir}/output.iso.gz
+    ls -la ${tmpedir}
+    echo "All ready in ${tmpdir}"
+}
+
+modprobe() {
+    modprobe virtio_scsi
+    modprobe virtio_blk
+    modprobe virtio_pci
+    modprobe virtio_net
+    modprobe e1000
+}
