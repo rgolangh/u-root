@@ -1,14 +1,79 @@
-#!/bin/bash
+#!/bin/bash -o errexit
+
+OCM_TOKEN=$(ocm token) 
+
+ocmcurl() { curl -s -H "Authorization: Bearer ${OCM_TOKEN}" "https://api.openshift.com/api/assisted-install/v2/$1"; }
+
+sayAndWait() { echo -e "$@\n-->\n" ; read -N 1 -s; }
+
+demo() {
+    sayAndWait $'This demo shows how to boot a machine with a boot disk and connect it whatever assisted cluster we choose'
+
+    sayAndWait $'It is done by booting the machine and extracting the iPXE script of a certain infra-env'
+
+    sayAndWait $'First lets extract the infra-env id and the cluster information from api.openshift.com:
+    ' $(type ocmcurl)
+
+    # get my infra envs and cluster id
+    sayAndWait $'Get my infra envs and cluster id from ocm:
+    ocmcurl infra-envs | jq .[]|{id,cluster_id}'
+
+    INFRA_ENV_ID=$(ocmcurl infra-envs | jq -r .[].id)
+    CLUSTER_ID=$(ocmcurl infra-envs | jq -r .[].cluster_id)
+
+    sayAndWait "infra env id: $INFRA_ENV_ID\ncluster id: $CLUSTER_ID\n"
+
+    # show cluster has no hosts
+    sayAndWait $'Show cluster has no hosts \
+    ocmcurl clusters/${CLUSTER_ID} | jq \'.hosts[]|{requestd_hostname, status_info, updated_at}\''
+
+    ocmcurl clusters/${CLUSTER_ID} | jq '.hosts[]|{requestd_hostname, status_info, updated_at}'
+
+    # in linode, 
+    # - show the uploaded image
+    
+    sayAndWait $'Using a u-root fork I create a custom initfamfs with a custom init that extracts
+    the kernel,initrd, and rootfs, created by the assisted installer.'
+
+    sayAndWait $'See the image uploaded linode https://cloud.linode.com/images'
+
+    # - create a linode from the bootloader disk
+    sayAndWait $'Lets create a linode and boot it from that disk.
+    It will boot into a live coreos from the cluster and will pull the ignition of that cluster and would register as an node
+
+    Lets manually put the details of the infra-env (this can be automated)'
+    # - show how to boot the machine from the disk
+    # - show both LISH and GLISH console 
+    # - show how the host is booting into the infra env
+
+    sayAndWait $'Examine the cluster hosts list - we should see the host now'
+    ocmcurl clusters/${CLUSTER_ID} | jq '.hosts[]|{requestd_hostname, status_info, updated_at}'
+
+    # - further demonstration of the boot disk
+    sayAndWait $'More details about the custom initramfs disk from https://github.com/rgolangh/u-root/tree/generic-hub-cluster-bootloader'
+    cd $(mktemp -d) && git clone https://github.com/rgolangh/u-root -b generic-hub-cluster-bootloader --depth=1 && cd u-root
+
+
+    #   - add another host with that disk
+    #   - stop at the shell 
+    #   - show the refresh token file
+    #   - show the infraenv id file
+    #   - show fire the assisted-bootloader and stop at the linuxboot menu
+ }
+
 createInitrd() {
-        # I added the moduls from the net installer of fedora.
-        u-root \
-            -uinitcmd="echo Welcome to OpenShift Assisted bootloader" \
-            -files "/var/tmp/uroot/modules:/lib/modules" \
-            -files "/tmp/infraenvid:/infraenvid" \
-            -files "/tmp/token:/token" \
-            -o /var/tmp/uroot/initrd \
-            core ./cmds/boot/pxeboot ./cmds/exp/modprobe ./cmds/assisted-bootloader
-    }
+    # I added the moduls from the net installer of fedora.
+    u-root \
+        -uinitcmd="/init.elvish" \
+        -files "init.elvish:/init.elvish" \
+        -files "/var/tmp/uroot/modules:/lib/modules" \
+        -files "/var/tmp/uroot/modprobe.d:/lib/modprobe.d" \
+        -files "/var/tmp/uroot/udev:/lib/udev" \
+        -files "/tmp/infraenvid:/infraenvid" \
+        -files "/tmp/token:/token" \
+        -o /var/tmp/uroot/initrd \
+        core ./cmds/boot/pxeboot ./cmds/exp/modprobe ./cmds/assisted-bootloader
+}
 
 # run u-root created initramf in a vm
 
@@ -26,10 +91,13 @@ runUrootVM() {
         -chardev pty,id=char1,mux=on,logfile=serial-1.log,signal=off \
         -serial chardev:char0 -mon chardev=char0 \
         -serial chardev:char1 -mon chardev=char1 \
-        -append "console=ttyS0" \
+        -append "console=ttyS0 rd.break rd.debug" \
         -netdev user,id=n1 \
-        -device e1000,netdev=n1 \
-        -device virtio-rng-pci
+        -device virtio-net,netdev=n1 \
+        -device virtio-rng-pci \
+        -monitor unix:/tmp/urootvm,server,nowait \
+        -name urootvm
+
 }
 
 runSingleDiskUrootVM() {
@@ -38,12 +106,17 @@ runSingleDiskUrootVM() {
         -cpu host \
         -smp sockets=2,cores=2 \
         -machine q35 \
-        -drive if=virtio,file=/var/tmp/uroot/assisted-bootloader-modprobe.iso,media=disk \
+        -nographic \
         -chardev stdio,id=char0,mux=on,logfile=serial-0.log,signal=off \
         -chardev pty,id=char1,mux=on,logfile=serial-1.log,signal=off \
+        -serial chardev:char0 -mon chardev=char0 \
+        -serial chardev:char1 -mon chardev=char1 \
+        -drive if=virtio,file=/var/tmp/uroot/expanded-bootloader-disk.img,format=raw,media=disk \
         -netdev user,id=n1 \
-        -device e1000,netdev=n1 \
-        -device virtio-rng-pci
+        -device virtio-net,netdev=n1 \
+        -device virtio-rng-pci \
+        -monitor unix:/tmp/urootvm,server,nowait \
+        -name urootvm
 }
 
 createISO() {
@@ -60,15 +133,15 @@ createISO() {
         ${tmpdir}/CD_root/
 
     isohybrid ${tmpdir}/output.iso
-    gzip -c ${tmpdir}/output.iso > ${tmpdir}/output.iso.gz
-    ls -la ${tmpedir}
+    cp -v ${tmpdir}/output.iso /var/tmp/uroot/assisted-bootloader.img
+    sfdisk --delete /var/tmp/uroot/assisted-bootloader.img 1
+    gzip -c /var/tmp/uroot/assisted-bootloader.img > /var/tmp/uroot/assisted-bootloader.img.gz
     echo "All ready in ${tmpdir}"
 }
 
-modprobe() {
-    modprobe virtio_scsi
-    modprobe virtio_blk
-    modprobe virtio_pci
-    modprobe virtio_net
-    modprobe e1000
+booting() {
+    # kargs to tell coreos which disk to install the os to `coreos.inst.install_dev=/dev/sda`
+    # if that arg isn't in the pxe script then we need to inject it to the cmd line,
+    # eithr by kexec append, or by mutating the script on download
+    true
 }
