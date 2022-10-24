@@ -1,7 +1,5 @@
 #!/bbin/elvish
 
-echo Welcome to OpenShift Assisted bootloader
-
 modprobe e1000
 modprobe virtio_net
 modprobe virtio_pci
@@ -9,8 +7,10 @@ modprobe virtio_scsi
 modprobe virtio_blk
 modprobe virtio_rng
 
-echo hit any key to boot 
-read -N 1
-assisted-bootloader -refresh-token-file /token -infra-env-id-file /infraenvid
+echo "----------------------------------------"
+echo "Welcome to OpenShift Assisted bootloader"
+echo ""
+echo "Enter the following to boot from the default infra-env ID:"
+echo "assisted-bootloader -refresh-token-file /token -infra-env-id-file /infraenvid"
 
 
